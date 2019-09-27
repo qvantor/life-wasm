@@ -23,35 +23,11 @@ pub struct Grid {
     size: i16,
 }
 
-impl Renderable for Grid {
-    fn render(&self, _context: &web_sys::CanvasRenderingContext2d) {
-        let max_size = (self.size * self.cell).into();
-        for i in 0..self.size {
-            let position = (i * self.cell).into();
-
-            _context.move_to(0.0, position);
-            _context.line_to(max_size, position);
-            _context.close_path();
-
-            _context.move_to(position, 0.0);
-            _context.line_to(position, max_size);
-            _context.close_path();
-        }
-        _context.move_to(0.0, max_size);
-        _context.line_to(max_size, max_size);
-        _context.close_path();
-
-        _context.move_to(max_size, 0.0);
-        _context.line_to(max_size, max_size);
-        _context.close_path();
-        _context.stroke();
-    }
-}
-
 #[derive(Debug)]
 struct Game {
     grid: Grid,
     state: Vec<Vec<bool>>,
+    interim_state: Vec<Vec<bool>>
 }
 
 impl Renderable for Game {
@@ -68,7 +44,6 @@ impl Renderable for Game {
                 }
             }
         }
-        self.grid.render(_context);
     }
 }
 
@@ -102,24 +77,41 @@ impl Game {
         self.render(_context);
         self
     }
-    fn calc_tick(&self) -> Vec<Vec<bool>> {
+    fn half_tick(&self, col: Vec<bool>, col_num: usize) -> Vec<bool> {
         let mut new_state = vec![];
-        for (col_num, col) in self.state.iter().enumerate() {
-            new_state.push(col.to_vec());
-            for row_num in 0..col.len() {
-                let nebour_count = self.get_nebour_count(row_num as i16, col_num as i16);
-                if col[row_num] {
-                    if nebour_count < 2 {
-                        new_state[col_num][row_num] = false;
-                    } else if nebour_count > 3 {
-                        new_state[col_num][row_num] = false;
-                    }
-                } else if nebour_count == 3 {
-                    new_state[col_num][row_num] = true;
+        for row_num in 0..col.len() {
+            let nebour_count = self.get_nebour_count(row_num as i16, col_num as i16);
+            if col[row_num] {
+                if nebour_count < 2 {
+                    new_state.push(false);
+                } else if nebour_count > 3 {
+                    new_state.push(false);
+                } else {
+                    new_state.push(col[row_num]);
                 }
+            } else if nebour_count == 3 {
+                new_state.push(true);
+            } else {
+                new_state.push(col[row_num]);
             }
         }
         new_state
+    }
+    // TODO refactor and decompose this function
+    fn calc_tick(&mut self) -> bool {
+        let perfomance = web_sys::window().unwrap().performance().expect("performance should be available");
+        let start_time: f64 = perfomance.now();
+        let mut done = true;
+        for col_num in self.interim_state.len()..self.state.len() {
+            let col = &self.state[col_num];
+            self.interim_state.push(self.half_tick(col.to_vec(), col_num));
+            let time_diff = perfomance.now() - start_time;
+            if time_diff > 13.0 {
+                done = false;
+                break;
+            }
+        }
+        done
     }
     fn get_nebour_count(&self, i: i16, j: i16) -> i8 {
         let mut count: i8 = 0;
@@ -136,8 +128,12 @@ impl Game {
         count
     }
     fn tick(&mut self, _context: &web_sys::CanvasRenderingContext2d) -> bool {
-        self.state = self.calc_tick();
-        self.render(_context);
+        let is_done = self.calc_tick();
+        if is_done {
+            self.state = self.interim_state.clone();
+            self.interim_state = vec![];
+            self.render(_context);
+        }
         true
     }
 }
@@ -154,13 +150,13 @@ pub fn start() {
         .unwrap();
     let performance = window.performance().expect("performance should be available");
 
-    const FPS: f64 = 15.0;
     let mut game = Game {
         grid: Grid {
-            cell: 15,
-            size: 50,
+            cell: 4,
+            size: 150,
         },
         state: vec![],
+        interim_state: vec![]
     };
 
     let context = canvas
@@ -169,22 +165,25 @@ pub fn start() {
         .unwrap()
         .dyn_into::<web_sys::CanvasRenderingContext2d>()
         .unwrap();
-    &context.translate(10.0, 10.0);
-    context.set_fill_style(&wasm_bindgen::JsValue::from_str("red"));
+    &context.translate(5.0, 5.0);
+    let grid_size = game.grid.cell * game.grid.size;
+    let gradient = &context
+        .create_linear_gradient(0.0,
+                                0.0,
+                                grid_size as f64,
+                                (grid_size * 2) as f64);
+    gradient.add_color_stop(0.0, "#f8d353");
+    gradient.add_color_stop(1.0, "#f7ca98");
+    context.set_fill_style(gradient);
 
     game.start(&context);
 
     let f = Rc::new(RefCell::new(None));
     let g = f.clone();
 
-    let mut time: f64 = 0.0;
-
     *g.borrow_mut() = Some(Closure::wrap(Box::new(move || {
         request_animation_frame(f.borrow().as_ref().unwrap());
-        if performance.now() - time > 1000.0 / FPS {
-            time = performance.now();
-            game.tick(&context);
-        }
+        game.tick(&context);
     }) as Box<dyn FnMut()>));
     request_animation_frame(g.borrow().as_ref().unwrap());
 }
